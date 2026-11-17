@@ -1,0 +1,40 @@
+{
+  "name": "dsh-plain-docs-guard",
+  "version": "0.1.0",
+  "description": "Make DeepSeek Harness agents load the plain-docs skill, then check the text they add",
+  "private": true,
+  "license": "MIT",
+  "keywords": [
+    "deepseek-harness",
+    "dsh-plugin",
+    "plain-docs"
+  ],
+  "type": "module",
+  "main": "lib/index.js",
+  "exports": {
+    ".": "./lib/index.js",
+    "./package.json": "./package.json"
+  },
+  "files": [
+    "lib",
+    "cordis.patch.yml",
+    "README.md",
+    "THIRD_PARTY.md"
+  ],
+  "scripts": {
+    "test": "node --import ./tests/dsh-runtime.mjs --test tests/*.test.mjs"
+  },
+  "engines": {
+    "node": "^22.19.0 || >=24.0.0"
+  },
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "peerDependencies": {
+    "@deepseek-ai/dsh-llm": ">=0.2.0-rc.2 <0.3.0-0",
+    "@deepseek-ai/dsh-tools": ">=0.2.0-rc.2 <0.3.0-0",
+    "@deepseek-ai/schemastery": "~3.18.4"
+  }
+}

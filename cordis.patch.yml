@@ -1,0 +1,12 @@
+# Requires the plain-docs skill before doc, comment, and commit writes, then
+# checks the added text. Override any field from the profile's own
+# cordis.patch.yml with an entry for id plain-docs-guard.
+- insert:
+    - id: plain-docs-guard
+      name: dsh-plain-docs-guard
+      config:
+        gate: deny
+        check: true
+        maxNotesPerTurn: 2
+        maxFindingsPerNote: 10
+        skillName: plain-docs
