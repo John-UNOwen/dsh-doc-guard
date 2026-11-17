@@ -3,13 +3,12 @@
 A DeepSeek Harness (DSH) plugin that makes agents load the `plain-docs` skill
 before they write docs, code comments, or commit messages. After each write it
 checks the text the agent added and sends the agent a note with the findings.
+The skill ships with the plugin, so one install brings both.
 
 ## Requirements
 
 - DSH 0.2 (`@deepseek-ai/dsh-tools` 0.2.0-rc.2 or later, below 0.3).
 - Node.js 22.19 or later.
-- The `plain-docs` skill at `~/.dsh/skills/plain-docs/SKILL.md`. Without it the
-  gate turns itself off and the word rules are empty.
 
 ## Install
 
@@ -22,6 +21,23 @@ dsh plugin --profile web add <path-to-this-folder>
 Replace `<path-to-this-folder>` with the folder that holds this README. Then
 add `dsh-plain-docs-guard` to `dsh.profile.bundles` in the profile's
 `package.json` and restart DSH.
+
+### The bundled skill
+
+The skill is in [skills/plain-docs/SKILL.md](skills/plain-docs/SKILL.md). At
+startup the plugin looks for an installed copy in this order:
+
+1. The `skillFile` setting, when it is set.
+2. `~/.dsh/skills/plain-docs/SKILL.md` (or `$DSH_HOME/skills`).
+3. `~/.agents/skills/plain-docs/SKILL.md` (or `$DSH_AGENTS_HOME/skills`).
+
+If it finds one, it uses that copy and registers nothing, so your own edits
+stay in charge. If it finds none, it registers the bundled copy with DSH, and
+agents load it with the `skill` tool as usual. A project's own
+`.dsh/skills/plain-docs` still wins over both.
+
+To use the skill without the plugin, or in another agent, copy the
+`skills/plain-docs` folder into that agent's skills folder.
 
 ## What it does
 
@@ -84,8 +100,9 @@ comment and docstring lines only.
 | `user-name` | The account name or the home folder path, including its 8.3 short form, in any added line |
 | `extra-word` | Words from the `extraWords` setting |
 
-The plugin reads the word lists from the installed `SKILL.md` at startup, so
-the skill is the only place they are kept. Restart DSH after you change them.
+The plugin reads the word lists from the same `SKILL.md` the agents load, at
+startup, so the skill is the only place they are kept. Restart DSH after you
+change them.
 
 A match inside quotation marks is listed last and marked `(quoted)`.
 
@@ -124,7 +141,8 @@ Override any of these in the profile's `cordis.patch.yml`, in an entry with
 | `maxNotesPerTurn` | `2` | Notes per agent per turn. |
 | `maxFindingsPerNote` | `10` | Findings listed in one note before the rest become a count. |
 | `skillName` | `plain-docs` | Skill to require. |
-| `skillFile` | empty | Path to the `SKILL.md` with the word lists. Empty means `~/.dsh/skills/<skillName>/SKILL.md`. |
+| `skillFile` | empty | Path to the `SKILL.md` with the word lists. Empty means the installed copy, or the bundled one. |
+| `bundleSkill` | `true` | Register the bundled skill when no installed copy is found. With `false` and no installed copy, the gate turns off. |
 | `docExtensions` | `.md`, `.mdx`, `.rst`, `.txt` | Extensions the gate treats as docs. |
 | `fileTools` | `write`, `edit`, `str_replace_editor` | File tools to watch. |
 | `shellTools` | `pwsh`, `bash` | Shell tools to watch. |
@@ -161,8 +179,6 @@ The tests load the Cordis runtime from the installed DSH, so they need no
 ```powershell
 npm test
 ```
-
-Some tests read the installed `plain-docs` skill and are skipped without it.
 
 ## Credits
 

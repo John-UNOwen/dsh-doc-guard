@@ -1,18 +1,18 @@
 // Loads the plugin into the Cordis runtime that ships with DSH (see
 // dsh-runtime.mjs) and drives it through the same calls DSH's tool runtime makes.
 import assert from 'node:assert/strict'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import fs from 'node:fs/promises'
 import { homedir, tmpdir, userInfo } from 'node:os'
 import path from 'node:path'
 import { describe, it } from 'node:test'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { Context } from '@deepseek-ai/cordis'
+import { SkillRegistry } from '@deepseek-ai/dsh-skill'
 import { createClassifier } from '../lib/classify.js'
 import * as plugin from '../lib/index.js'
 
 const DASH = '—'
-const realSkill = path.join(homedir(), '.dsh', 'skills', 'plain-docs', 'SKILL.md')
 
 async function setup(config = {}, tools = {}) {
   const dir = await fs.mkdtemp(path.join(tmpdir(), 'pdg-'))
@@ -38,6 +38,33 @@ const notes = (decision) => (decision.additionalContexts || []).map((m) => m.con
 /** Start a model step, the way the agent loop does before each request. */
 const step = (ctx, agent, turn = 1) =>
   ctx.waterfall(ctx, 'agent/pre-step', { agent, messages: [], turn, step: 0 }, () => Promise.resolve({ kind: 'enter', messages: [] }))
+/** Run `fn` with DSH_HOME and DSH_AGENTS_HOME pointing at empty temp folders. */
+async function withHomes(fn) {
+  const saved = [process.env.DSH_HOME, process.env.DSH_AGENTS_HOME]
+  const dsh = await fs.mkdtemp(path.join(tmpdir(), 'pdg-dsh-'))
+  process.env.DSH_HOME = dsh
+  process.env.DSH_AGENTS_HOME = await fs.mkdtemp(path.join(tmpdir(), 'pdg-agents-'))
+  try {
+    return await fn(dsh)
+  } finally {
+    for (const [k, v] of [['DSH_HOME', saved[0]], ['DSH_AGENTS_HOME', saved[1]]]) {
+      if (v === undefined) delete process.env[k]
+      else process.env[k] = v
+    }
+  }
+}
+
+/** Load the plugin next to DSH's own skill registry, with the skill file left to discovery. */
+async function withRegistry(config = {}) {
+  const ctx = new Context()
+  ctx.provide('tools')
+  ctx.set('tools', { guard: () => () => {}, get: () => ({}) })
+  await ctx.plugin(SkillRegistry)
+  await ctx.plugin(plugin, { skillFile: '', stateFile: path.join(process.env.DSH_HOME, 'state.json'), ...config })
+  await sleep(0)
+  return { ctx, registry: ctx.get('skills') }
+}
+
 const classifier = createClassifier(plugin.Config({}))
 const classify = (agent, name, args) => classifier.classify({ name, arguments: args, agent })
 
@@ -242,11 +269,59 @@ describe('load gate', () => {
     await ctx.plugin(plugin, { skillName: 'no-such-skill-pdg', stateFile: path.join(dir, 'state.json') })
     assert.equal(logs.length, 2)
     assert.match(logs[0], /plain-docs skill was not found at the configured skillFile/)
-    assert.match(logs[1], /no-such-skill-pdg skill was not found in ~\/\.dsh\/skills\/no-such-skill-pdg/)
+    assert.match(logs[1], /no-such-skill-pdg skill was not found in ~\/\.dsh\/skills, ~\/\.agents\/skills, or this plugin/)
     for (const line of logs) {
       assert.equal(line.toLowerCase().includes(homedir().toLowerCase()), false)
       assert.equal(line.includes(dir), false)
     }
+  })
+
+  it('registers the bundled skill when no copy is installed', async () => {
+    await withHomes(async () => {
+      const { ctx, registry } = await withRegistry()
+      const skills = await registry.list()
+      const entry = skills.find((s) => s.name === 'plain-docs')
+      assert.ok(entry, 'listed')
+      assert.equal(entry.source, 'bundled')
+      assert.equal(entry.invocation.modelInvocable, true)
+      const loaded = await registry.get('plain-docs')
+      assert.match(loaded.content, /^# Plain docs/)
+      assert.equal(loaded.content.includes('description:'), false, 'the frontmatter is stripped')
+      // The bundled copy also feeds the gate and the word lists.
+      const agent = newAgent('agent-1', tmpdir())
+      assert.equal((await pre(ctx, call(agent, 'write', { file_path: 'README.md', content: 'x' }))).kind, 'deny')
+    })
+  })
+
+  it('leaves an installed copy in charge and does not register the bundled one', async () => {
+    await withHomes(async (dsh) => {
+      await fs.mkdir(path.join(dsh, 'skills', 'plain-docs'), { recursive: true })
+      await fs.writeFile(path.join(dsh, 'skills', 'plain-docs', 'SKILL.md'), '---\nname: plain-docs\ndescription: local\n---\n- AI vocabulary: zorbify. Cut it.\n')
+      const { ctx, registry } = await withRegistry()
+      assert.equal((await registry.list()).some((s) => s.name === 'plain-docs'), false)
+      const agent = newAgent('agent-1', await fs.mkdtemp(path.join(tmpdir(), 'pdg-cwd-')))
+      await loadSkill(ctx, agent)
+      const r = await write(ctx, agent, 'a.md', 'We zorbify it. We delve in.\n')
+      assert.match(r.notes[0], /word=zorbify/)
+      assert.doesNotMatch(r.notes[0], /delve/, 'the word lists come from the installed copy')
+    })
+  })
+
+  it('bundleSkill false turns the bundled copy off', async () => {
+    await withHomes(async () => {
+      const { ctx, registry } = await withRegistry({ bundleSkill: false })
+      assert.equal((await registry.list()).some((s) => s.name === 'plain-docs'), false)
+      const agent = newAgent('agent-1', tmpdir())
+      assert.equal((await pre(ctx, call(agent, 'write', { file_path: 'README.md', content: 'x' }))).kind, 'allow')
+    })
+  })
+
+  it('the bundled skill matches the parsed frontmatter', () => {
+    const text = readFileSync(new URL('../skills/plain-docs/SKILL.md', import.meta.url), 'utf8')
+    const { fields, body } = plugin.parseSkill(text)
+    assert.equal(fields.name, 'plain-docs')
+    assert.match(fields.description, /^Write, edit or review docs/)
+    assert.ok(body.startsWith('# Plain docs\n'))
   })
 
   it('turns the gate off when the skill file is missing', async () => {
@@ -459,8 +534,7 @@ describe('text check', () => {
     }
   })
 
-  it('reads the word lists from the installed skill', async (t) => {
-    if (!existsSync(realSkill)) return t.skip('plain-docs skill is not installed')
+  it('reads the word lists from the installed or bundled skill', async () => {
     const { ctx, agent } = await setup({ skillFile: '' })
     await loadSkill(ctx, agent)
     const r = await write(ctx, agent, 'a.md', 'We delve into the flywheel.\n')

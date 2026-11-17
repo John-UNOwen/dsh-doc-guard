@@ -3,9 +3,10 @@ import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import path from 'node:path'
 import { describe, it } from 'node:test'
+import { fileURLToPath } from 'node:url'
 import { analyze, buildLists, detectShortHome, privatePattern, scanComments, scanProse } from '../lib/rules.js'
 
-const skillFile = process.env.PLAIN_DOCS_SKILL || path.join(homedir(), '.dsh', 'skills', 'plain-docs', 'SKILL.md')
+const skillFile = process.env.PLAIN_DOCS_SKILL || fileURLToPath(new URL('../skills/plain-docs/SKILL.md', import.meta.url))
 const skill = existsSync(skillFile) ? readFileSync(skillFile, 'utf8') : ''
 const lists = buildLists(skill, { allowPhrases: ['DeepSeek Harness'] })
 const rules = (text, target = { kind: 'doc' }) => analyze(text, target, lists).map((f) => f.rule)
