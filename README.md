@@ -12,15 +12,17 @@ The skill ships with the plugin, so one install brings both.
 
 ## Install
 
-From a local checkout:
-
 ```powershell
-dsh plugin --profile web add <path-to-this-folder>
+dsh plugin --profile web add github:John-UNOwen/dsh-doc-guard
 ```
 
-Replace `<path-to-this-folder>` with the folder that holds this README. Then
-add `dsh-plain-docs-guard` to `dsh.profile.bundles` in the profile's
-`package.json` and restart DSH.
+Restart DSH afterwards. To get a newer version later:
+
+```powershell
+dsh plugin --profile web update dsh-plain-docs-guard
+```
+
+To install into another profile, replace `web` with its name.
 
 ### The bundled skill
 
