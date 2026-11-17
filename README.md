@@ -71,9 +71,11 @@ For an edit to a code file, the plugin compares the comments in the whole file
 before and after the edit, so an edit inside an existing block comment or
 docstring counts.
 
-The skill counts as loaded after a successful `skill` call for it, or after the
-user invokes it with `/plain-docs`. Each agent session loads it once, and so
-does each subagent.
+The skill counts as loaded while a successful load of it is still in the
+model's context: a `skill` call for it, or the user typing `/plain-docs`. The
+plugin reads this from the session log, so a load survives a DSH restart or a
+reseeded session. If a compaction removes the skill text, the agent must load
+it again. Each subagent has its own session and loads it once.
 
 The gate steps aside in these cases:
 
@@ -165,7 +167,6 @@ call. A DSH restart clears it.
 ## Limits
 
 - The plugin can't see the agent's final reply, so it doesn't check it.
-- A session that resumes after a DSH restart must load the skill again.
 - A shell write to a path built from a variable is gated by its file name but
   not checked.
 - Comment detection reads one line at a time. It misses a comment marker that

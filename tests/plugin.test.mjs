@@ -9,6 +9,7 @@ import { describe, it } from 'node:test'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { Context } from '@deepseek-ai/cordis'
 import { SkillRegistry } from '@deepseek-ai/dsh-skill'
+import { assertV4RowAdmission } from '@deepseek-ai/dsh-session-format-v3-to-v4'
 import { createClassifier } from '../lib/classify.js'
 import * as plugin from '../lib/index.js'
 
@@ -38,6 +39,42 @@ const notes = (decision) => (decision.additionalContexts || []).map((m) => m.con
 /** Start a model step, the way the agent loop does before each request. */
 const step = (ctx, agent, turn = 1) =>
   ctx.waterfall(ctx, 'agent/pre-step', { agent, messages: [], turn, step: 0 }, () => Promise.resolve({ kind: 'enter', messages: [] }))
+/**
+ * A session with a model-visible surface, shaped like DSH's: `surface.nodes` lists
+ * the visible event seqs and `eventAt` returns an event by seq.
+ */
+function liveSession(cwd, version = 4) {
+  const events = []
+  let hidden = new Set()
+  return {
+    header: { cwd, version },
+    surface: {
+      get nodes() {
+        return events.filter((e) => !hidden.has(e.seq)).map((e) => e.seq)
+      },
+    },
+    eventAt: (seq) => events[seq],
+    add(type, data) {
+      events.push({ type, seq: events.length, data })
+      return events.length - 1
+    },
+    /** Hide events from the surface, as a compaction does. */
+    compact() {
+      hidden = new Set(events.map((e) => e.seq))
+    },
+    /** A reseeded copy: a new object over the same log. */
+    reseed() {
+      const copy = liveSession(cwd, version)
+      for (const e of events) copy.add(e.type, e.data)
+      return copy
+    },
+  }
+}
+const skillResult = (name = 'plain-docs', isError = false) => ({
+  message: { role: 'tool', content: [{ type: 'text', text: `<skill_content name="${name}">\n<skill_resources>\n</skill_resources>` }] },
+  isError,
+})
+
 /** Run `fn` with DSH_HOME and DSH_AGENTS_HOME pointing at empty temp folders. */
 async function withHomes(fn) {
   const saved = [process.env.DSH_HOME, process.env.DSH_AGENTS_HOME]
@@ -345,6 +382,48 @@ describe('load gate', () => {
     assert.equal((await write(ctx, agent, 'README.md', 'One.\n')).gate.kind, 'allow')
   })
 
+  it('counts a load still visible in the session after a reseed', async () => {
+    const { ctx, cwd } = await setup()
+    const session = liveSession(cwd)
+    session.add('tool/result', skillResult())
+    // The plugin never saw this load: it happened before a reseed or a restart.
+    const agent = { id: 'agent-1', session: session.reseed() }
+    assert.equal((await pre(ctx, call(agent, 'write', { file_path: 'README.md', content: 'x' }))).kind, 'allow')
+  })
+
+  it('ignores a visible result for another skill or a failed load', async () => {
+    const { ctx, cwd } = await setup()
+    const session = liveSession(cwd)
+    session.add('tool/result', skillResult('okf'))
+    session.add('tool/result', skillResult('plain-docs', true))
+    session.add('tool/result', { message: { role: 'tool', content: [{ type: 'text', text: 'Error: skill "plain-docs" is unknown' }] }, isError: true })
+    const agent = { id: 'agent-1', session }
+    assert.equal((await pre(ctx, call(agent, 'write', { file_path: 'README.md', content: 'x' }))).kind, 'deny')
+  })
+
+  it('asks for a reload after compaction drops the skill text', async () => {
+    const { ctx, cwd } = await setup()
+    const session = liveSession(cwd)
+    const agent = { id: 'agent-1', session }
+    await step(ctx, agent)
+    await loadSkill(ctx, agent)
+    session.add('tool/result', skillResult())
+    const edit = () => call(agent, 'write', { file_path: 'README.md', content: 'x' })
+    assert.equal((await pre(ctx, edit())).kind, 'allow')
+    session.compact()
+    await step(ctx, agent)
+    assert.equal((await pre(ctx, edit())).kind, 'deny')
+  })
+
+  it('trusts a load from this step before its result reaches the surface', async () => {
+    const { ctx, cwd } = await setup()
+    const session = liveSession(cwd)
+    const agent = { id: 'agent-1', session }
+    await step(ctx, agent)
+    await loadSkill(ctx, agent)
+    assert.equal((await pre(ctx, call(agent, 'write', { file_path: 'README.md', content: 'x' }))).kind, 'allow')
+  })
+
   it('a failed skill call does not open the gate', async () => {
     const { ctx, agent } = await setup()
     await post(ctx, call(agent, 'skill', { name: 'plain-docs' }), { isError: true })
@@ -511,6 +590,27 @@ describe('text check', () => {
     await pre(ctx, failed)
     await fs.writeFile(path.join(cwd, 'e.md'), `One ${DASH} a.\n`)
     assert.deepEqual(notes(await post(ctx, failed, { isError: true })), ['other'])
+  })
+
+  it('uses the producer-owned source kind in format v4 sessions and the wrapper before', async () => {
+    for (const [version, expected] of [[4, { kind: 'plugin:plain-docs-guard' }], [3, { kind: 'plugin', plugin: 'plain-docs-guard' }]]) {
+      const { ctx, cwd } = await setup()
+      const agent = { id: 'agent-1', session: liveSession(cwd, version) }
+      await loadSkill(ctx, agent)
+      const exec = call(agent, 'write', { file_path: 'a.md', content: 'x' })
+      await pre(ctx, exec)
+      await fs.writeFile(path.join(cwd, 'a.md'), `One ${DASH} a.\n`)
+      const decision = await post(ctx, exec)
+      assert.equal(decision.additionalContexts.length, 1)
+      assert.deepEqual({ ...decision.additionalContexts[0].source }, expected, `version ${version}`)
+      if (version === 4) {
+        // DSH's own check for a v4 log row: the note must pass, and the old wrapper must not.
+        const row = (msg) => JSON.parse(JSON.stringify({ type: 'agent/inbox/spliced', seq: 1, time: 1, data: { target: 'next-step', start: 0, inserted: [msg] } }))
+        const note = decision.additionalContexts[0]
+        assertV4RowAdmission(row(note))
+        assert.throws(() => assertV4RowAdmission(row({ ...note, source: { kind: 'plugin', plugin: 'plain-docs-guard' } })), /producer-owned source kind/)
+      }
+    }
   })
 
   it('check false sends no notes', async () => {
